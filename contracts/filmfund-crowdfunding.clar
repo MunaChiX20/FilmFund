@@ -34,6 +34,7 @@
 (define-public (create-campaign (title (string-ascii 100)) (description (string-ascii 500)) (goal uint) (duration uint))
     (let ((campaign-id (var-get next-campaign-id)))
         (asserts! (> (len title) u0) err-invalid-amount)
+        (asserts! (> (len description) u0) err-invalid-amount)
         (asserts! (> goal u0) err-invalid-amount)
         (asserts! (> duration u0) err-invalid-amount)
         (map-set campaigns campaign-id {
