@@ -24,6 +24,12 @@
 (define-constant err-campaign-ended (err u410))
 (define-constant err-invalid-amount (err u400))
 (define-constant err-campaign-active (err u409))
+(define-constant err-already-funded (err u411))
+
+;; Helper function to get current block height as time proxy
+(define-read-only (get-current-time)
+    block-height
+)
 
 (define-public (create-campaign (title (string-ascii 100)) (description (string-ascii 500)) (goal uint) (duration uint))
     (let ((campaign-id (var-get next-campaign-id)))
@@ -36,7 +42,7 @@
             description: description,
             goal: goal,
             raised: u0,
-            deadline: (+ (unwrap-panic (get-stacks-block-info? time (- stx-liquid-supply u1))) (* duration u86400)),
+            deadline: (+ (get-current-time) duration),
             active: true,
             funded: false
         })
@@ -48,7 +54,7 @@
 (define-public (contribute (campaign-id uint) (amount uint))
     (let (
         (campaign (unwrap! (map-get? campaigns campaign-id) err-not-found))
-        (current-time (unwrap-panic (get-stacks-block-info? time (- stx-liquid-supply u1))))
+        (current-time (get-current-time))
         (existing-contribution (default-to u0 (map-get? contributions {campaign-id: campaign-id, contributor: tx-sender})))
     )
         (asserts! (get active campaign) err-campaign-ended)
@@ -64,7 +70,7 @@
 (define-public (finalize-campaign (campaign-id uint))
     (let (
         (campaign (unwrap! (map-get? campaigns campaign-id) err-not-found))
-        (current-time (unwrap-panic (get-stacks-block-info? time (- stx-liquid-supply u1))))
+        (current-time (get-current-time))
         (raised (get raised campaign))
         (goal (get goal campaign))
         (creator (get creator campaign))
@@ -100,10 +106,58 @@
     )
 )
 
+;; Additional helper functions for better functionality
+(define-public (withdraw-funds (campaign-id uint))
+    (let (
+        (campaign (unwrap! (map-get? campaigns campaign-id) err-not-found))
+        (raised (get raised campaign))
+        (goal (get goal campaign))
+        (creator (get creator campaign))
+    )
+        (asserts! (is-eq tx-sender creator) err-not-authorized)
+        (asserts! (not (get active campaign)) err-campaign-active)
+        (asserts! (get funded campaign) err-not-authorized)
+        (asserts! (>= raised goal) err-already-funded)
+        (let ((fee (/ (* raised (var-get platform-fee)) u10000)))
+            (try! (as-contract (stx-transfer? (- raised fee) tx-sender creator)))
+            (try! (as-contract (stx-transfer? fee tx-sender contract-owner)))
+            (ok true)
+        )
+    )
+)
+
 (define-read-only (get-campaign (campaign-id uint))
     (map-get? campaigns campaign-id)
 )
 
 (define-read-only (get-contribution (campaign-id uint) (contributor principal))
     (map-get? contributions {campaign-id: campaign-id, contributor: contributor})
+)
+
+(define-read-only (get-campaign-stats (campaign-id uint))
+    (match (map-get? campaigns campaign-id)
+        campaign (ok {
+            progress: (if (> (get goal campaign) u0) 
+                         (/ (* (get raised campaign) u100) (get goal campaign)) 
+                         u0),
+            time-left: (if (> (get deadline campaign) (get-current-time)) 
+                          (- (get deadline campaign) (get-current-time)) 
+                          u0),
+            is-successful: (>= (get raised campaign) (get goal campaign))
+        })
+        err-not-found
+    )
+)
+
+(define-read-only (get-platform-fee)
+    (var-get platform-fee)
+)
+
+(define-public (update-platform-fee (new-fee uint))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-not-authorized)
+        (asserts! (<= new-fee u1000) err-invalid-amount) ;; Max 10% fee
+        (var-set platform-fee new-fee)
+        (ok true)
+    )
 )
